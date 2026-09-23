@@ -1,0 +1,27 @@
+# Dependencies / build
+node_modules/
+.next/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets
+.env
+.env.*
+!.env.example
+sample.env
+
+# Logs / local
+*.log
+nohup.out
+.DS_Store
+
+# Legacy / heavy local artifacts (not needed to deploy)
+output_gtts.mp3
+test-output.mp3
+test-video.mp4
+doctor_response.mp3
+patient_voice.wav
+patient_voice_test.mp3
+sample-image.png

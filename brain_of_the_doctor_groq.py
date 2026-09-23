@@ -44,7 +44,7 @@ def brain_of_the_doctor(patient_text, image_filepath=None, video_filepath=None):
 
     client = Groq(api_key=groq_api_key)
     response = client.chat.completions.create(
-        model=os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        model=os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b"),
         max_completion_tokens=1000,
         messages=[
             {

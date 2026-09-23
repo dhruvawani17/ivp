@@ -1,0 +1,24 @@
+# Vercel / Next.js — ignore non-web files (Python app stays in repo for reference)
+.venv/
+.git/
+node_modules/
+__pycache__/
+*.py
+uv.lock
+pyproject.toml
+sample.env
+.env
+*.mp3
+*.wav
+*.mp4
+sample-image.png
+stitch_ai_skin_specialist_dashboard/
+assets/
+fonts/
+index.html
+styles.css
+main.js
+config.js
+scripts/
+start.sh
+**/*.log
