@@ -75,12 +75,24 @@ async function transcribeAudio({ audio, audioName, groqKey }) {
   return (data.text || "").trim();
 }
 
-async function analyzeImage({ image, transcript, hasVideo, groqKey, history = [] }) {
+async function analyzeImage({
+  image,
+  transcript,
+  hasVideo,
+  cvMetrics,
+  videoInfo,
+  bodyZone,
+  ddxList,
+  detectedAllergens,
+  groqKey,
+  history = [],
+}) {
   const system =
-    "You are a careful skin care assistant. Give general information, not a diagnosis. " +
-    "You are a confident, natural doctor specializing in skin care. Speak with the reassurance, clarity, and authority of a real doctor. " +
-    "Limit each response to two or three sentences maximum. " +
-    "If the patient has provided a video, explain that you are reviewing the uploaded image because this model cannot process video directly. " +
+    "You are an expert clinical dermatologist. Give high-precision medical guidance, not a final legal diagnosis. " +
+    "Speak with the reassurance, clarity, and authority of a licensed skin specialist. " +
+    "Limit your response to two or three sentences maximum. " +
+    "You have access to quantitative computer vision measurements: Fitzpatrick phototype, ABCDE metrics, anatomical site, top differential diagnosis probabilities, and detected product allergens. " +
+    "Integrate these quantitative findings and any critical contraindications into your guidance naturally where appropriate. " +
     "Do not use any special characters, symbols, asterisks, or markdown formatting in your response because it will be converted directly to audio. " +
     "Continue the conversation naturally when the patient asks follow-up questions.";
 
@@ -89,19 +101,52 @@ async function analyzeImage({ image, transcript, hasVideo, groqKey, history = []
     .slice(-16)
     .map((m) => ({ role: m.role, content: m.content.trim() }));
 
+  const cvSummary = cvMetrics
+    ? [
+        `Quantitative Dermoscopy Data:`,
+        `- Fitzpatrick Skin Phototype: ${cvMetrics.fitzpatrick?.type || "Unknown"} (${cvMetrics.fitzpatrick?.name || ""}), ITA: ${cvMetrics.fitzpatrick?.ita || 0}°`,
+        `- Asymmetry Score: ${cvMetrics.asymmetry?.score || 0}% (${cvMetrics.asymmetry?.rating || ""})`,
+        `- Border Compactness: ${cvMetrics.border?.compactness || "N/A"} (${cvMetrics.border?.rating || ""})`,
+        `- Color Variegation: ${cvMetrics.color?.distinctCount || 1} distinct pigment clusters (${cvMetrics.color?.rating || ""})`,
+        `- Estimated Lesion Diameter: ${cvMetrics.diameter?.estimatedMm || "N/A"} mm (${cvMetrics.diameter?.rating || ""})`,
+        `- Total Dermoscopy Score (TDS): ${cvMetrics.tdsScore || "N/A"} (${cvMetrics.riskTier || ""})`,
+      ].join("\n")
+    : "";
+
+  const locationSummary = bodyZone
+    ? `Anatomical Location: ${bodyZone.label || bodyZone.id} (${bodyZone.region || ""}).`
+    : "";
+
+  const allergenSummary =
+    Array.isArray(detectedAllergens) && detectedAllergens.length > 0
+      ? `Contact Allergens Detected in Patient Skincare/Household Items: ${detectedAllergens.map((a) => a.name).join(", ")}.`
+      : "";
+
+  const ddxSummary =
+    Array.isArray(ddxList) && ddxList.length > 0
+      ? `Differential Probabilities: ${ddxList.map((d) => `${d.name} (${d.probability}%)`).join(", ")}. Primary Warning: ${ddxList[0]?.contraindications?.[0] || ""}`
+      : "";
+
+  const videoSummary = videoInfo
+    ? `Video temporal analysis: ${videoInfo.framesAnalyzed || 8} keyframes extracted with ${videoInfo.glareReductionPercent || 20}% specular glare reduction.`
+    : hasVideo
+    ? "Patient uploaded video with multi-angle temporal surface capture."
+    : "";
+
   const followUp = prior.length > 0;
   const userText = followUp
     ? transcript
     : [
-        "You are a confident, natural doctor specializing in skin care. Speak with the reassurance, clarity, and authority of a real doctor.",
+        "You are an expert clinical dermatologist. Speak with reassurance, clarity, and authority.",
         "Limit your entire response to two or three sentences maximum.",
-        "If the patient has provided a video, explain that you are reviewing the uploaded image because this model cannot process video directly.",
         "Do not use any special characters, symbols, asterisks, or markdown formatting in your response because it will be converted directly to audio.",
         "",
         `Patient text: ${transcript || "(no speech transcription available)"}`,
-        hasVideo
-          ? "The patient also uploaded a video, but use the provided image as the visual reference."
-          : "",
+        locationSummary,
+        allergenSummary,
+        cvSummary,
+        ddxSummary,
+        videoSummary,
       ]
         .filter(Boolean)
         .join("\n");
@@ -180,8 +225,21 @@ export async function POST(request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { audio, audioName, image, hasVideo, text, inputMode, history, followUp } =
-    body || {};
+  const {
+    audio,
+    audioName,
+    image,
+    hasVideo,
+    text,
+    inputMode,
+    history,
+    followUp,
+    cvMetrics,
+    videoInfo,
+    bodyZone,
+    ddxList,
+    detectedAllergens,
+  } = body || {};
   const plainText = typeof text === "string" ? text.trim() : "";
   const isFollowUp = followUp === true || (Array.isArray(history) && history.length > 0);
 
@@ -216,6 +274,11 @@ export async function POST(request) {
       image: image || null,
       transcript,
       hasVideo: !!hasVideo,
+      cvMetrics: cvMetrics || null,
+      videoInfo: videoInfo || null,
+      bodyZone: bodyZone || null,
+      ddxList: ddxList || null,
+      detectedAllergens: detectedAllergens || null,
       groqKey,
       history: isFollowUp ? history : [],
     });

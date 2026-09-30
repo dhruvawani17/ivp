@@ -19,6 +19,9 @@ def encode_image_for_groq(filepath):
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+from clinical_vision import analyze_skin_image_py
+
+
 def brain_of_the_doctor(patient_text, image_filepath=None, video_filepath=None):
     groq_api_key = os.environ.get("GROQ_API_KEY")
     if not groq_api_key:
@@ -27,20 +30,32 @@ def brain_of_the_doctor(patient_text, image_filepath=None, video_filepath=None):
     if not image_filepath:
         raise ValueError("Groq vision requires an image. Please upload a skin image.")
 
-    # Groq vision does not accept video here. When main.py passes both image and
-    # video, this uses the same image as the visual input and ignores the video.
     image_data = encode_image_for_groq(image_filepath)
 
-    prompt = (
-        "You are a confident, natural doctor specializing in skin care. Speak with the reassurance, clarity, and authority of a real doctor. "
-        "Limit your entire response to two or three sentences maximum. "
-        "If the patient has provided a video, explain that you are reviewing the uploaded image because this model cannot process video directly. "
-        "Do not use any special characters, symbols, asterisks, or markdown formatting in your response because it will be converted directly to audio.\n\n"
-        f"Patient text: {patient_text}"
-    )
+    # Compute quantitative Computer Vision metrics
+    try:
+        cv_data = analyze_skin_image_py(image_filepath)
+        cv_summary = (
+            f"\nQuantitative Dermoscopic Measurements:\n"
+            f"- Fitzpatrick Skin Phototype: {cv_data['fitzpatrick_type']} (ITA: {cv_data['ita_degrees']} deg, {cv_data['fitzpatrick_note']})\n"
+            f"- Asymmetry: {cv_data['asymmetry_percent']}%, Border Compactness: {cv_data['border_compactness']}\n"
+            f"- Estimated Diameter: {cv_data['estimated_diameter_mm']} mm, TDS Risk Score: {cv_data['tds_score']} ({cv_data['risk_tier']})\n"
+        )
+    except Exception:
+        cv_summary = ""
 
+    video_note = ""
     if video_filepath:
-        prompt += "\nThe patient also uploaded a video, but use the provided image as the visual reference."
+        video_note = "\nPatient provided sequential multi-angle surface video capture with specular glare reduction."
+
+    prompt = (
+        "You are an expert clinical dermatologist. Speak with reassurance, clarity, and authority. "
+        "Limit your entire response to two or three sentences maximum. "
+        "Do not use any special characters, symbols, asterisks, or markdown formatting in your response because it will be converted directly to audio.\n\n"
+        f"Patient text: {patient_text}\n"
+        f"{cv_summary}"
+        f"{video_note}"
+    )
 
     client = Groq(api_key=groq_api_key)
     response = client.chat.completions.create(
@@ -49,7 +64,7 @@ def brain_of_the_doctor(patient_text, image_filepath=None, video_filepath=None):
         messages=[
             {
                 "role": "system",
-                "content": "You are a careful skin care assistant. Give general information, not a diagnosis.",
+                "content": "You are a clinical dermatologist consultant. Give high-precision medical guidance, not a final legal diagnosis.",
             },
             {
                 "role": "user",

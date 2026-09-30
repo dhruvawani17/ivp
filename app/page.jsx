@@ -4,18 +4,23 @@ import Consult from "@/components/Consult";
 const STEPS = [
   {
     n: "01",
-    title: "Describe by voice",
-    body: "Record a short note or upload audio explaining what you noticed — itchiness, redness, duration, and spread.",
+    title: "Clinical Voice Description",
+    body: "Speak or type your symptoms. Audio is transcribed and contextualized alongside visual and demographic data.",
   },
   {
     n: "02",
-    title: "Share image or clip",
-    body: "Add a well-lit photo of the area. An optional short video from multiple angles helps with texture and movement.",
+    title: "Computer Vision & Glare Removal",
+    body: "Upload photos or video clips. Our multi-frame algorithm eliminates specular glare reflections and segments lesion boundaries.",
   },
   {
     n: "03",
-    title: "Get guidance + audio",
-    body: "Receive a transcript, concise doctor-style guidance, and a spoken response you can listen to right away.",
+    title: "Quantitative ABCDE & Heatmaps",
+    body: "Inspect multi-layer CIE L*a*b* erythema heatmaps, melanin density, and objective mathematical ABCDE melanoma scores.",
+  },
+  {
+    n: "04",
+    title: "Temporal Skin Diary & SOAP Export",
+    body: "Track 30-day lesion evolution with delta difference heatmaps and generate printable clinical SOAP referral documents.",
   },
 ];
 

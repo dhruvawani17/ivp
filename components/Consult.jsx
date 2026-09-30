@@ -1,6 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { analyzeSkinImage, processSkinVideo } from "@/lib/clinicalVision";
+import {
+  ANATOMICAL_ZONES,
+  calculateDifferentialDiagnosis,
+} from "@/lib/dermatologyEngine";
+import DiagnosticVisualizer from "@/components/DiagnosticVisualizer";
+import SkinDiaryCompare from "@/components/SkinDiaryCompare";
+import ClinicalSOAPReport from "@/components/ClinicalSOAPReport";
+import AnatomicalBodyMap from "@/components/AnatomicalBodyMap";
+import IngredientScanner from "@/components/IngredientScanner";
+import DifferentialDiagnosisCard from "@/components/DifferentialDiagnosisCard";
 
 async function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -31,6 +42,7 @@ async function shrinkImage(file, max = 1024) {
 }
 
 export default function Consult() {
+  const [activeTab, setActiveTab] = useState("consult"); // 'consult' | 'diary'
   const [inputMode, setInputMode] = useState("text");
   const [plainText, setPlainText] = useState("");
   const [audioFile, setAudioFile] = useState(null);
@@ -54,6 +66,15 @@ export default function Consult() {
   const [followBusy, setFollowBusy] = useState(false);
   const [followRec, setFollowRec] = useState(false);
   const [activeAudioId, setActiveAudioId] = useState(null);
+  const [analysisData, setAnalysisData] = useState(null);
+  const [videoData, setVideoData] = useState(null);
+  const [isProcessingCv, setIsProcessingCv] = useState(false);
+  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [videoProgress, setVideoProgress] = useState(0);
+  const [showSoapModal, setShowSoapModal] = useState(false);
+  const [selectedBodyZone, setSelectedBodyZone] = useState("forearm");
+  const [detectedAllergens, setDetectedAllergens] = useState([]);
+  const [activeClinicalDrawer, setActiveClinicalDrawer] = useState("bodymap"); // 'none' | 'bodymap' | 'allergens'
   const threadEndRef = useRef(null);
   const followRecRef = useRef(null);
   const followRecTimer = useRef(null);
@@ -133,13 +154,37 @@ export default function Consult() {
       const shrunk = await shrinkImage(file);
       setImageFile(file);
       setImagePreview(shrunk);
-      setStatusLine("ok", "Skin image ready");
+      setStatusLine("ok", "Skin image loaded. Running computer vision segmentation...");
+      setIsProcessingCv(true);
+
+      const imgEl = new Image();
+      imgEl.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = imgEl.width;
+        c.height = imgEl.height;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(imgEl, 0, 0);
+        try {
+          const cv = analyzeSkinImage(c);
+          setAnalysisData(cv);
+          setStatusLine(
+            "ok",
+            `Skin image analyzed (${cv.fitzpatrick.type} skin, ABCDE scored)`
+          );
+        } catch (e) {
+          console.error("CV error:", e);
+          setStatusLine("ok", "Skin image ready");
+        } finally {
+          setIsProcessingCv(false);
+        }
+      };
+      imgEl.src = shrunk;
     } catch {
       setStatusLine("err", "Could not read that image");
     }
   };
 
-  const onVideo = (file) => {
+  const onVideo = async (file) => {
     if (!file) return;
     if (!file.type.startsWith("video/")) {
       setStatusLine("err", "Please choose a video file");
@@ -147,7 +192,41 @@ export default function Consult() {
     }
     setVideoFile(file);
     setVideoName(file.name);
-    setStatusLine("ok", "Video attached");
+    setStatusLine(
+      "ok",
+      "Processing video: extracting keyframes & eliminating specular glare..."
+    );
+    setIsProcessingVideo(true);
+
+    try {
+      const vRes = await processSkinVideo(file, (p) => setVideoProgress(p));
+      setVideoData(vRes);
+
+      // If user hasn't uploaded a static image yet, use the glare-free composite
+      if (!imagePreview && vRes.glareFreeCompositeUrl) {
+        setImagePreview(vRes.glareFreeCompositeUrl);
+        const imgEl = new Image();
+        imgEl.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = imgEl.width;
+          c.height = imgEl.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(imgEl, 0, 0);
+          const cv = analyzeSkinImage(c);
+          setAnalysisData(cv);
+        };
+        imgEl.src = vRes.glareFreeCompositeUrl;
+      }
+      setStatusLine(
+        "ok",
+        `Video processed: ${vRes.framesAnalyzed} keyframes analyzed, glare reduced by ${vRes.glareReductionPercent}%`
+      );
+    } catch (err) {
+      console.error("Video processing error:", err);
+      setStatusLine("ok", "Video attached");
+    } finally {
+      setIsProcessingVideo(false);
+    }
   };
 
   const onAudioUpload = (file) => {
@@ -224,12 +303,44 @@ export default function Consult() {
   const buildHistory = () =>
     thread.map((m) => ({ role: m.role, content: m.content }));
 
+  const currentZoneObj = useMemo(
+    () =>
+      ANATOMICAL_ZONES.find((z) => z.id === selectedBodyZone) ||
+      ANATOMICAL_ZONES[9],
+    [selectedBodyZone]
+  );
+
+  const currentDdx = useMemo(
+    () =>
+      calculateDifferentialDiagnosis({
+        symptomsText: plainText || result?.transcript || "",
+        bodyZoneId: selectedBodyZone,
+        cvMetrics: analysisData?.metrics || null,
+        fitzpatrick: analysisData?.fitzpatrick || null,
+        detectedAllergens,
+      }),
+    [plainText, result, selectedBodyZone, analysisData, detectedAllergens]
+  );
+
+
   const sendConsult = async ({ useText, textVal, audio, audioNameVal, isFollowUp }) => {
     const payload = {
       inputMode: useText ? "text" : "voice",
       text: useText ? textVal : null,
       image: imagePreview || null,
       hasVideo: !!videoFile,
+      bodyZone: currentZoneObj,
+      ddxList: currentDdx,
+      detectedAllergens: detectedAllergens,
+      cvMetrics: analysisData?.metrics
+        ? { ...analysisData.metrics, fitzpatrick: analysisData.fitzpatrick }
+        : null,
+      videoInfo: videoData
+        ? {
+            framesAnalyzed: videoData.framesAnalyzed,
+            glareReductionPercent: videoData.glareReductionPercent,
+          }
+        : null,
       history: isFollowUp ? buildHistory() : [],
       followUp: !!isFollowUp,
     };
@@ -403,7 +514,7 @@ export default function Consult() {
   };
 
   const hasInput = inputMode === "text" ? plainText.trim().length > 0 : !!audioFile;
-  const canSubmit = hasInput && (imageFile || videoFile);
+  const canSubmit = hasInput && (imageFile || videoFile || imagePreview);
   const canFollow =
     !followBusy &&
     (followMode === "text"
@@ -414,20 +525,41 @@ export default function Consult() {
     <section className="section" id="consult">
       <div className="section-head anim" style={{ "--d": "0.05s" }}>
         <span className="eyebrow">
-          <i className="fa-solid fa-stethoscope" /> Live consultation
+          <i className="fa-solid fa-stethoscope" /> Clinical Dermatology Suite
         </span>
-        <h2 className="section-title">Start your skin check</h2>
+        <h2 className="section-title">Multimodal Skin Inspection &amp; Diagnosis</h2>
         <p className="section-sub">
-          Type your concern or describe it by voice, add a clear photo (and
-          optional clip), then analyze — guidance and spoken response in one pass.
+          Voice description, computer vision lesion segmentation, quantitative ABCDE scoring,
+          and temporal evolution tracking in one comprehensive clinical workspace.
         </p>
       </div>
 
-      <div className="consult anim" style={{ "--d": "0.15s" }}>
-        <div
-          className={`consult-grid ${dragKind ? "is-dragging" : ""}`}
-          {...zoneDragProps("panel")}
+      {/* Tab Switcher: Live Consultation vs Skin Diary */}
+      <div className="consult-tab-bar anim" style={{ "--d": "0.1s" }}>
+        <button
+          type="button"
+          className={`consult-tab-btn ${activeTab === "consult" ? "active" : ""}`}
+          onClick={() => setActiveTab("consult")}
         >
+          <i className="fa-solid fa-microscope" /> Live Consultation &amp; Computer Vision
+        </button>
+        <button
+          type="button"
+          className={`consult-tab-btn ${activeTab === "diary" ? "active" : ""}`}
+          onClick={() => setActiveTab("diary")}
+        >
+          <i className="fa-solid fa-clock-rotate-left" /> Spatio-Temporal Skin Diary (Day 1 vs Day 30)
+        </button>
+      </div>
+
+      {activeTab === "diary" ? (
+        <SkinDiaryCompare initialCurrentImage={imagePreview} />
+      ) : (
+        <div className="consult anim" style={{ "--d": "0.15s" }}>
+          <div
+            className={`consult-grid ${dragKind ? "is-dragging" : ""}`}
+            {...zoneDragProps("panel")}
+          >
           {/* Input panel */}
           <div className="panel">
             <div className="panel-title">
@@ -600,6 +732,55 @@ export default function Consult() {
               </div>
             </div>
 
+            {/* Clinical Context: Anatomical Location & Contact Allergens */}
+            <div className="clinical-drawer-section">
+              <div className="drawer-nav">
+                <button
+                  type="button"
+                  className={`drawer-tab ${activeClinicalDrawer === "bodymap" ? "active" : ""}`}
+                  onClick={() =>
+                    setActiveClinicalDrawer((prev) => (prev === "bodymap" ? "none" : "bodymap"))
+                  }
+                >
+                  <i className="fa-solid fa-child" />
+                  <span>Site: <strong>{currentZoneObj.label}</strong></span>
+                </button>
+                <button
+                  type="button"
+                  className={`drawer-tab ${activeClinicalDrawer === "allergens" ? "active" : ""}`}
+                  onClick={() =>
+                    setActiveClinicalDrawer((prev) => (prev === "allergens" ? "none" : "allergens"))
+                  }
+                >
+                  <i className="fa-solid fa-flask-vial" />
+                  <span>
+                    Product Screener{" "}
+                    {detectedAllergens.length > 0 && (
+                      <span className="trigger-badge">({detectedAllergens.length} triggers)</span>
+                    )}
+                  </span>
+                </button>
+              </div>
+
+              {activeClinicalDrawer === "bodymap" && (
+                <div className="drawer-panel">
+                  <AnatomicalBodyMap
+                    selectedZoneId={selectedBodyZone}
+                    onSelectZone={(zId) => setSelectedBodyZone(zId)}
+                  />
+                </div>
+              )}
+
+              {activeClinicalDrawer === "allergens" && (
+                <div className="drawer-panel">
+                  <IngredientScanner
+                    detectedAllergens={detectedAllergens}
+                    onAllergensDetected={(items) => setDetectedAllergens(items)}
+                  />
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               className="analyze-btn"
@@ -716,6 +897,9 @@ export default function Consult() {
                   <div ref={threadEndRef} />
                 </div>
 
+                {/* Multimodal Differential Diagnosis & Contraindication Matrix */}
+                <DifferentialDiagnosisCard ddxList={currentDdx} />
+
                 <div className="followup">
                   <div className="result-label">Ask a follow-up</div>
                   <div className="mode-toggle follow-mode" role="tablist">
@@ -822,7 +1006,37 @@ export default function Consult() {
             )}
           </div>
         </div>
+
+        {/* Computer Vision Diagnostic Visualizer */}
+        {analysisData && (
+          <DiagnosticVisualizer
+            analysisData={analysisData}
+            videoData={videoData}
+            onOpenReport={() => setShowSoapModal(true)}
+          />
+        )}
       </div>
-    </section>
-  );
+    )}
+
+    {/* Clinical SBAR / SOAP Report Modal */}
+    <ClinicalSOAPReport
+      isOpen={showSoapModal}
+      onClose={() => setShowSoapModal(false)}
+      patientData={{
+        transcript: result?.transcript || plainText,
+        text: plainText,
+        inputMode: result?.inputMode || inputMode,
+      }}
+      analysisData={analysisData}
+      videoData={videoData}
+      bodyZone={currentZoneObj}
+      ddxList={currentDdx}
+      detectedAllergens={detectedAllergens}
+      guidanceText={
+        result?.guidance ||
+        thread.slice().reverse().find((m) => m.role === "assistant")?.content
+      }
+    />
+  </section>
+);
 }
